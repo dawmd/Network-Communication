@@ -10,6 +10,10 @@
 #include <optional>
 #include <stdexcept>
 #include <queue>
+#include <vector>
+#include <type_traits>
+
+#include "move_only_function.h"
 
 
 namespace Network {
@@ -17,7 +21,9 @@ namespace Network {
 
 class ThreadPool {
 private:
-    std::queue<std::function<void()>> tasks;
+    using Task = MoveOnlyFunction<void()>;
+
+    std::queue<Task> tasks;
     std::vector<std::thread> threads;
     std::size_t task_count;
     std::mutex mutex;
@@ -28,6 +34,7 @@ private:
 public:
     ThreadPool(std::size_t thread_count = std::thread::hardware_concurrency())
     : tasks{}
+    , threads{}
     , task_count{0}
     , mutex{}
     , perform_tasks{true}
@@ -38,8 +45,10 @@ public:
 
         const std::size_t count = thread_count ? thread_count : DEFAULT_THREAD_COUNT;
         for (std::size_t i = 0; i < count; ++i)
-            threads.push_back(std::thread{work});
+            threads.push_back(std::thread{&ThreadPool::work, this});
     }
+
+    ThreadPool(const ThreadPool &other) = delete;
 
     ~ThreadPool() {
         perform_tasks = false;
@@ -48,23 +57,38 @@ public:
     }
 
     template<typename F, typename... Args>
-        requires std::invocable<F>
+        requires std::invocable<F, Args...>
     auto add_task(F &&f, Args &&...args) {
-        auto task = std::packaged_task(
-            [f = std::forward<F>(f), ...args = std::forward<Args>(args)]() mutable {
-                return std::invoke(std::move(f), std::forward(args)...);
-            });
-        auto result = task.get_future();
-        {
+        using R = std::invoke_result_t<std::remove_cvref_t<F>&&, std::remove_cvref_t<Args>&&...>;
+        
+        std::promise<R> promise;
+        std::future<R> future = promise.get_future();
+        
+        MoveOnlyFunction<void()> task{
+            [promise = std::move(promise), f = std::forward<F>(f), ...args = std::forward<Args>(args)]() mutable {
+                try {
+                    promise.set_value(std::invoke(std::move(f), std::forward<Args>(args)...));
+                } catch (...) {
+                    try {
+                        promise.set_exception(std::current_exception());
+                    } catch (...) {
+                        // ignore
+                    }
+                }
+            }
+        };
+
+        /* lock */ {
             const std::lock_guard<std::mutex> lock{mutex};
             tasks.push(std::move(task));
             ++task_count;
         }
-        return result;
+        
+        return future;
     }
 
 private:
-    [[nodiscard]] std::optional<std::function<void()>> get_task() {
+    [[nodiscard]] std::optional<Task> get_task() {
         const std::lock_guard<std::mutex> lock{mutex};
         if (task_count) {
             --task_count;
