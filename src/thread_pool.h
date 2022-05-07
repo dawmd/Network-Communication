@@ -2,6 +2,7 @@
 #define __THREAD_POOL_H__
 
 #include <atomic>
+#include <concepts>
 #include <cstdlib>  // std::size_t
 #include <thread>   // std::thread, std::thread::hardware_concurrency
 #include <functional>
@@ -9,9 +10,9 @@
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <queue>
 #include <vector>
-#include <type_traits>
 
 #include "move_only_function.h"
 
@@ -91,9 +92,9 @@ private:
     [[nodiscard]] std::optional<Task> get_task() {
         const std::lock_guard<std::mutex> lock{mutex};
         if (task_count) {
-            --task_count;
             auto result = std::make_optional(std::move(tasks.front()));
             tasks.pop();
+            --task_count;
             return result;
         } else {
             return {};

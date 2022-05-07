@@ -15,7 +15,7 @@ class MoveOnlyFunction<R(Args...)> {
 private:
     struct BaseFunction {
         virtual ~BaseFunction() = default;
-        virtual R operator()(Args... args) = 0;
+        virtual R operator()(Args ...args) = 0;
     };
 
     template<typename F>
@@ -26,7 +26,7 @@ private:
         ModelFunction(F &&f)
         : function{std::move(f)} {}
 
-        R operator()(Args... args) override {
+        R operator()(Args ...args) override {
             return function(args...);
         }
     };
@@ -57,7 +57,7 @@ public:
 
     ~MoveOnlyFunction() = default;
 
-    R operator()(Args... args) {
+    R operator()(Args ...args) {
         return function->operator()(args...);
     }
 };
