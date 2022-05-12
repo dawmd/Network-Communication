@@ -3,22 +3,20 @@
 
 #include <atomic>
 #include <concepts>
-#include <cstdlib>  // std::size_t
-#include <thread>   // std::thread, std::thread::hardware_concurrency
-#include <functional>
+#include <cstdlib>      // std::size_t
+#include <thread>       // std::thread, std::thread::hardware_concurrency()
+#include <functional>   // std::invoke
 #include <future>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
-#include <type_traits>
+#include <stdexcept>    // std::invalid_argument
+#include <type_traits>  // std::decay_t, std::invoke_result_t
 #include <queue>
 #include <vector>
 
 #include "move_only_function.h"
 
-
 namespace Network {
-
 
 class ThreadPool {
 private:
@@ -45,11 +43,16 @@ public:
             throw std::invalid_argument{"A thread pool must have at least one thread."};
 
         const std::size_t count = thread_count ? thread_count : DEFAULT_THREAD_COUNT;
+        threads.reserve(count);
         for (std::size_t i = 0; i < count; ++i)
-            threads.push_back(std::thread{&ThreadPool::work, this});
+            threads.emplace_back(std::thread{&ThreadPool::work, this});
     }
 
-    ThreadPool(const ThreadPool &other) = delete;
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool &operator=(const ThreadPool&) = delete;
+
+    ThreadPool(ThreadPool&&) = default;
+    ThreadPool &operator=(ThreadPool&&) = default;
 
     ~ThreadPool() {
         perform_tasks = false;
@@ -60,20 +63,29 @@ public:
     template<typename F, typename... Args>
         requires std::invocable<F, Args...>
     auto add_task(F &&f, Args &&...args) {
-        using R = std::invoke_result_t<std::remove_cvref_t<F>&&, std::remove_cvref_t<Args>&&...>;
-        
+        using R = std::invoke_result_t<std::decay_t<F>&&, std::decay_t<Args>&&...>;
+
         std::promise<R> promise;
         std::future<R> future = promise.get_future();
         
-        MoveOnlyFunction<void()> task{
+        Task task{
             [promise = std::move(promise), f = std::forward<F>(f), ...args = std::forward<Args>(args)]() mutable {
                 try {
-                    promise.set_value(std::invoke(std::move(f), std::forward<Args>(args)...));
+                    // std::promise<void>::set_value() cannot take any arguments,
+                    // even if the returned value is void
+                    if constexpr (std::is_same_v<R, void>) {
+                        std::invoke(std::move(f), std::forward<Args>(args)...);
+                        promise.set_value();
+                    } else {
+                        promise.set_value(std::invoke(std::move(f), std::forward<Args>(args)...));
+                    }
                 } catch (...) {
                     try {
                         promise.set_exception(std::current_exception());
                     } catch (...) {
-                        // ignore
+                        // Ignore. According to cppreference for std::promise<T>::set_exception():
+                        // "An exception is thrown if there is no shared state
+                        //  or the shared state already stores a value or exception."
                     }
                 }
             }
@@ -110,7 +122,6 @@ private:
         }
     }
 };
-
 
 } // namespace Network
 
